@@ -8,6 +8,8 @@ categories:
 mathjax: true
 ---
 
+> [The Annotated Transformer](https://nlp.seas.harvard.edu/annotated-transformer/)
+
 ## 前置准备
 
 > [清华镜像站](https://mirrors.tuna.tsinghua.edu.cn/anaconda/archive/)
@@ -46,5 +48,4 @@ pip install -r requirements.txt
 pip install -q torchdata==0.3.0 torchtext==0.12 spacy==3.2 altair GPUtil
 pip install de_core_news_sm-3.2.0-py3-none-any.whl --no-deps
 pip install en_core_web_sm-3.2.0-py3-none-any.whl --no-deps
-
 ```

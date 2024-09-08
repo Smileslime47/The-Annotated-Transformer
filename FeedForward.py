@@ -21,19 +21,15 @@ import torch.distributed as dist
 import torch.multiprocessing as mp
 from torch.nn.parallel import DistributedDataParallel as DDP
 
-from Layer import clones, LayerNorm
 
+class PositionwiseFeedForward(nn.Module):
+    "Implements FFN equation."
 
-class Encoder(nn.Module):
-    """Core encoder is a stack of N layers"""
+    def __init__(self, d_model, d_ff, dropout=0.1):
+        super(PositionwiseFeedForward, self).__init__()
+        self.w_1 = nn.Linear(d_model, d_ff)
+        self.w_2 = nn.Linear(d_ff, d_model)
+        self.dropout = nn.Dropout(dropout)
 
-    def __init__(self, layer, N):
-        super(Encoder, self).__init__()
-        self.layers = clones(layer, N)
-        self.norm = LayerNorm(layer.size)
-
-    def forward(self, x, mask):
-        """Pass the input (and mask) through each layer in turn."""
-        for layer in self.layers:
-            x = layer(x, mask)
-        return self.norm(x)
+    def forward(self, x):
+        return self.w_2(self.dropout(self.w_1(x).relu()))
