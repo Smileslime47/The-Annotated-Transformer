@@ -49,3 +49,7 @@ pip install -q torchdata==0.3.0 torchtext==0.12 spacy==3.2 altair GPUtil
 pip install de_core_news_sm-3.2.0-py3-none-any.whl --no-deps
 pip install en_core_web_sm-3.2.0-py3-none-any.whl --no-deps
 ```
+
+## 参考文献
+
+> [Transformer代码阅读](http://fancyerii.github.io/2019/03/09/transformer-codes/)

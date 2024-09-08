@@ -52,7 +52,7 @@ class Generator(nn.Module):
 
 Transformer 模型整体架构遵循了**基于多重堆叠的自注意力、逐点（Point-Wise）、完全连接的编码器/解码器层**的设计
 
-![](./model-architecture.png)
+![](./figure-1.png)
 
 ## Encoder and Decoder Stacks
 
@@ -318,7 +318,7 @@ if __name__=="__main__":
 
 我们将这个特殊的注意力机制称为**缩放点积注意力**（Figure 2），输入包含查询、维度为$d_k$的键和维度为$d_v$的值。我们**计算查询和所有键的点积（对应图中的MatMul），并除以$\sqrt{d_k}$（对应图中的Scale）**，将结果应用到一个 **softmax** 函数来得出值的权重
 
-![](./attention.png)
+![](./figure-2-left.png)
 
 在实践中，我们同时计算一组查询的注意力函数——将查询封装在矩阵 $Q$ 中，同样地，键和值封装在矩阵 $K$ 和 $V$ 中，那么有输出矩阵的公式：
 
@@ -346,8 +346,75 @@ $$Attention(Q,K,V) = softmax(\frac{QK^T}{\sqrt{d_k}})V$$
 - 加法注意力通过一个具有隐藏层的前馈网络来计算兼容性函数
 - 尽管两种算法的复杂度理论上的相近的，但是由于矩阵乘法有高度优化过的代码实现，因此点积注意力在实践中要更快、更节省时间
 
-尽管在$d_k$较小时，两种注意力算法的表现相近；在不对较大的$d_k$进行缩放时，加法注意力的表现要优于点积注意力。我们怀疑当 $d_k$ 较大时，点积会变得更大，从而将softmax函数推入一个梯度极小的区域。为了抵消这个影响，我们将点积缩放至 $\frac{1}{\sqrt{d_k}}$。
+尽管在$d_k$较小时，两种注意力算法的表现相近；在对较大的$d_k$进行缩放时，加法注意力的表现要优于点积注意力。我们怀疑当 $d_k$ 较大时，点积会变得更大，从而将softmax函数推入一个梯度极小的区域。为了抵消这个影响，我们将点积缩放至 $\frac{1}{\sqrt{d_k}}$。
 - 为了描述点积变大的原因，我们假设q和k的分量都是均值为0，方差为1的独立随机变量，那么它们的点积  $q·k = \sum_{i=1}^{d_k}q_ik_i$ 的均值为0，**方差为 $d_k$**
 - 分量是向量中的各个数字，如果n个数字组成了一个n维向量，那么这n个数就被称作该向量的分量
 
-![](./multihead-attention.png)
+![](./figure-2-right.png)
+
+多头注意力允许模型在不同的位置去关注不同表示子空间的信息。With a single attention head, averaging inhibits this.
+
+$$
+Multihead(Q,K,V) = Concat(head_1,\dots ,head_h)W^O \\
+where head_i = Attention(QW_i^Q,KW_i^K,VW_i^V)
+$$
+
+其中投影是参数矩阵：
+
+$$
+W_i^Q​\in \mathbb{R}^{d_{model​}\times d_k}​\\
+W_i^K\in \mathbb{R}^{d_{model​}\times d_k}\\
+W_i^V\in \mathbb{R}^{d_{model​}\times d_v}\\
+W_i^O\in \mathbb{R}^{hd_v\times d_{model​}}
+$$
+
+在实践中我们采用 $h=8$ 的并行注意力层，或者说注意力头。对于每一个注意力头我们采用 $d_k = d_v =d_{model}/h = 64$.由于每个注意力头的维度较小，因此总共的计算成本与全维度（$d_{model}$)的单头注意力相近
+
+```py
+"Attention.py"
+
+class MultiHeadedAttention(nn.Module):
+    def __init__(self, h, d_model, dropout=0.1):
+        """输入模型尺寸和注意力头数量"""
+        super(MultiHeadedAttention, self).__init__()
+        # 模型尺寸必然能够整除注意力头数量
+        assert d_model % h == 0
+        # 假定d_v永远等于d_k
+        self.d_k = d_model // h
+        self.h = h
+        self.linears = clones(nn.Linear(d_model, d_model), 4)
+        self.attn = None
+        self.dropout = nn.Dropout(p=dropout)
+
+    def forward(self, query, key, value, mask=None):
+        """实现 Figure 2 中的算法"""
+        if mask is not None:
+            # 对所有 h 个注意力头应用相同的mask
+            mask = mask.unsqueeze(1)
+        nbatches = query.size(0)
+
+        # 1) 从 d_model => h x d_k 批量进行所有线性投影，即将 d_model 分割为 h 个 d_k 分配给注意力头
+        # Do all the linear projections in batch from d_model => h x d_k
+        query, key, value = [
+            lin(x).view(nbatches, -1, self.h, self.d_k).transpose(1, 2)
+            for lin, x in zip(self.linears, (query, key, value))
+        ]
+
+        # 2) 对所有投影向量批量应用注意力
+        # Apply attention on all the projected vectors in batch.
+        x, self.attn = attention(
+            query, key, value, mask=mask, dropout=self.dropout
+        )
+
+        # 3) 通过一个视图拼接并应用最终的线性变换，即将被分割为 h 个 d_k 维的注意力头重新拼接为一个 d_model 的向量
+        # "Concat" using a view and apply a final linear.
+        x = (
+            x.transpose(1, 2)
+            .contiguous()
+            .view(nbatches, -1, self.h * self.d_k)
+        )
+        del query
+        del key
+        del value
+        return self.linears[-1](x)
+```
