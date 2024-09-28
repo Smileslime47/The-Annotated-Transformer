@@ -8,12 +8,15 @@ from layers.Layer import clones
 def attention(query, key, value, mask=None, dropout=None):
     """计算点积缩放注意力"""
     d_k = query.size(-1)
+    "计算查询向量和键向量的点积，并除以sqrt(d_k)"
     scores = torch.matmul(query, key.transpose(-2, -1)) / math.sqrt(d_k)
     if mask is not None:
         scores = scores.masked_fill(mask == 0, -1e9)
+    "调用softmax函数，将注意力得分转换为概率权重"
     p_attn = scores.softmax(dim=-1)
     if dropout is not None:
         p_attn = dropout(p_attn)
+    "返回权重和值向量的点积结果"
     return torch.matmul(p_attn, value), p_attn
 
 class MultiHeadedAttention(nn.Module):

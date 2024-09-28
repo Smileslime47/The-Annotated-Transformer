@@ -311,10 +311,7 @@ if __name__=="__main__":
 注意力函数可以被描述为将一个查询和一组键值对映射到一个输出上（mapping a query and a set of key-value pairs to an output）
 - 其中，查询、键和值均为向量
 
-> **存疑：什么是兼容性函数（compatibility function）**
-
-函数的输出是值的加权和
-- 每个值的权重通过查询和相应的键的兼容性函数计算得出
+函数的输出是值向量的加权和，每个值向量的权重通过查询和相应的键的兼容性函数计算得出
 
 我们将这个特殊的注意力机制称为**缩放点积注意力**（Figure 2），输入包含查询、维度为$d_k$的键和维度为$d_v$的值。我们**计算查询和所有键的点积（对应图中的MatMul），并除以$\sqrt{d_k}$（对应图中的Scale）**，将结果应用到一个 **softmax** 函数来得出值的权重
 
@@ -330,12 +327,15 @@ $$Attention(Q,K,V) = softmax(\frac{QK^T}{\sqrt{d_k}})V$$
 def attention(query, key, value, mask=None, dropout=None):
     """计算点积缩放注意力"""
     d_k = query.size(-1)
+    "计算查询向量和键向量的点积，并除以sqrt(d_k)"
     scores = torch.matmul(query, key.transpose(-2, -1)) / math.sqrt(d_k)
     if mask is not None:
         scores = scores.masked_fill(mask == 0, -1e9)
+    "调用softmax函数，将注意力得分转换为概率权重"
     p_attn = scores.softmax(dim=-1)
     if dropout is not None:
         p_attn = dropout(p_attn)
+    "返回权重和值向量的点积结果"
     return torch.matmul(p_attn, value), p_attn
 ```
 
@@ -352,7 +352,7 @@ $$Attention(Q,K,V) = softmax(\frac{QK^T}{\sqrt{d_k}})V$$
 
 ![](./figure-2-right.png)
 
-多头注意力允许模型在不同的位置去关注不同表示子空间的信息。With a single attention head, averaging inhibits this.
+多头注意力允许模型在不同的位置去关注不同的表示子空间的信息。With a single attention head, averaging inhibits this.
 
 $$
 Multihead(Q,K,V) = Concat(head_1,\dots ,head_h)W^O \\
@@ -368,7 +368,7 @@ W_i^V\in \mathbb{R}^{d_{model​}\times d_v}\\
 W_i^O\in \mathbb{R}^{hd_v\times d_{model​}}
 $$
 
-在实践中我们采用 $h=8$ 的并行注意力层，或者说注意力头。对于每一个注意力头我们采用 $d_k = d_v =d_{model}/h = 64$.由于每个注意力头的维度较小，因此总共的计算成本与全维度（$d_{model}$)的单头注意力相近
+在实践中我们采用 $h=8$ 个并行注意力层，或者说注意力头。对于每一个注意力头我们采用 $d_k = d_v =d_{model}/h = 64$.由于每个注意力头的维度较小，因此总共的计算成本与全维度（$d_{model}$)的单头注意力相近
 
 ```py
 "Attention.py"
@@ -418,3 +418,49 @@ class MultiHeadedAttention(nn.Module):
         del value
         return self.linears[-1](x)
 ```
+
+### Attention在模型中的应用
+
+Transformer通过三种不同的方式应用多头注意力机制
+
+1. 在*Encoder-Decoder*注意力层中，查询向量来自前一个解码器层，而键值向量来自编码器的输出。这允许解码器中的每个位置去关注整个输入序列中的所有位置。这个机制模仿了序列到序列模型中典型的*Encoder-Decoder*注意力机制
+2. 编码器包含*自注意力层*，在这一层中，所有的键值和查询向量都来自于同一处，这里即前一层编码器层的输出。因此编码器层中的每个位置都可以去关注编码器前一层中的所有位置
+3. 类似的，解码器中的自注意力层允许解码器中的每个位置都可以去关注解码器中**直到该位置为止的所有位置**。我们需要防止解码器中的*leftward information flow*来保留自回归属性。我们在缩放点积注意力中已经通过将softmax的输入中的非法值进行掩码（即设置为负无穷）来实现了这一点
+
+## Position-wise Feed-Forward Networks
+
+除了注意力子层之外，我们的编码器/解码器中的每一层都还包含一个全连接前馈网络，该网络分别且相同地应用于每个位置。它由两个线性变换组成，中间由一个ReLU激活。
+
+$$
+FFN(x)=max(0,W_1x+b_1)W_2+b_2
+$$
+
+其中$max(0,x)$部分即ReLU函数
+
+虽然线性变换在整个序列中的不同位置都是相同的，但是在层与层之间使用的是不同的参数。另一种描述方式是描述为两个内核大小为1的卷积。
+
+输入和输出的维度都是$d_model=512$，而内层的维度则是$d_{ff}=2048$
+
+```py
+"FeedForward.py"
+
+class PositionwiseFeedForward(nn.Module):
+    """实现FFN的方程"""
+
+    def __init__(self, d_model, d_ff, dropout=0.1):
+        """定义两个线性变换和dropout函数"""
+        super(PositionwiseFeedForward, self).__init__()
+        "从d_model变维到d_ff"
+        self.w_1 = nn.Linear(d_model, d_ff)
+        "从d_ff变维到d_model"
+        self.w_2 = nn.Linear(d_ff, d_model)
+        self.dropout = nn.Dropout(dropout)
+
+    def forward(self, x):
+        """在执行w_1函数后丢给ReLU，然后再执行w_2函数"""
+        return self.w_2(self.dropout(self.w_1(x).relu()))
+```
+
+### Embeddings and Softmax
+
+和其他序列传导模型类似，
